@@ -1,0 +1,38 @@
+# One-command integration harness for adl-mcp-server.
+# Stands up a throwaway TimescaleDB (same image family ADL uses, so PostGIS +
+# TimescaleDB are present), seeds the grounded mini-ADL fixture, then runs the
+# smoke test through the MCP's real tool dispatch.
+#
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from smoke
+#   docker compose -f docker-compose.test.yml down -v
+services:
+  adl_db_test:
+    image: timescale/timescaledb-ha:pg15
+    environment:
+      POSTGRES_DB: adl
+      POSTGRES_USER: adl
+      POSTGRES_PASSWORD: testpass
+    volumes:
+      - ./tests/fixtures/seed_fixture.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adl -d adl"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  smoke:
+    build: .
+    depends_on:
+      adl_db_test:
+        condition: service_healthy
+    environment:
+      ADL_DB_HOST: adl_db_test
+      ADL_DB_PORT: "5432"
+      ADL_DB_NAME: adl
+      ADL_DB_USER: adl          # owner here for fixture simplicity; use adl_readonly in prod
+      ADL_DB_PASSWORD: testpass
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "tests/integration_smoke.py"]

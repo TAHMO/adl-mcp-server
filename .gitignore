@@ -1,0 +1,14 @@
+# local secrets / config (NEVER commit a real .env — keep .env.example only)
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# os cruft
+.DS_Store
+Thumbs.db
