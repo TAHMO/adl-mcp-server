@@ -7,7 +7,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY guards.py mcp_server.py ./
+COPY guards.py adl_api.py mcp_server.py ./
 
 # stdio MCP — must be attached to a client over stdin/stdout (-i).
 CMD ["python", "mcp_server.py"]

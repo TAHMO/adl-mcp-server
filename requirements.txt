@@ -1,2 +1,2 @@
-mcp>=1.2
-psycopg[binary]>=3.1
+mcp>=1.2,<2
+psycopg[binary]>=3.1   # db route only; an api-only deploy (ADL_BACKENDS=api) does not import it

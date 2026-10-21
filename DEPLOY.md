@@ -1,7 +1,15 @@
 # adl-mcp-server — deployment runbook
 
-Read-only MCP over a WMO **Automated Data Loader (ADL)** TimescaleDB. ADL is the
-system of record; this server only ever reads.
+Read-only MCP over a WMO **Automated Data Loader (ADL)**. ADL is the system of record;
+this server only ever reads. It reaches ADL one of two ways, or both:
+
+| Route | Needs | Best when |
+|---|---|---|
+| **db** — direct TimescaleDB | a SELECT-only Postgres role and network reach to ADL's DB | you run the ADL host, or want free-form SQL and the hourly aggregate |
+| **api** — ADL's REST API *(v0.2.0)* | an ADL API key (and, for QC, an ADL login) and HTTPS reach to the ADL site | a national service will share an API key but not database access; or the server runs off-site |
+
+Choose with `ADL_BACKENDS` (`db`, `api` or `db,api`). Default: `db`, plus `api` when
+`ADL_API_URL` is set — so a v0.1.0 deployment behaves exactly as before.
 
 ---
 
@@ -29,10 +37,53 @@ ingest/dispatch path is in this server's scope — it reads the DB only.
 
 ---
 
+## ADL REST API (grounded — what the api_* tools call)
+
+Source: ADL **v0.8.17** — `adl/src/adl/config/urls.py`, `adl/src/adl/api/{urls,views,auth,
+serializers,pagination}.py`, `adl/src/adl/viewer/views.py`. Every data endpoint is a GET.
+
+| Tool | ADL endpoint | ADL auth |
+|---|---|---|
+| `api_connections` | `GET /api/network-connection/` | API key or login |
+| `api_station_links(connection_id)` | `GET /api/network-connection/{id}/station-links/` | API key or login |
+| `api_data_parameters(connection_id?)` | `GET /api/data-parameters/` · `GET /api/network-connection/{id}/data-parameters/` | API key or login |
+| `api_station_link(station_link_id)` | `GET /api/station-link/{id}/` | API key or login |
+| `api_latest(station_link_id)` | `GET /api/data/latest/{id}/` | API key or login |
+| `api_timeseries(station_link_id, start?, end?, category?, page?, limit?)` | `GET /api/data/timeseries/{id}/?paginate=true` | API key or login |
+| `api_qc_summary(month?, year?)` | `GET /api/qc/summary/` | **login only** |
+| `api_qc_inspection(station_id, month, year)` | `GET /api/qc/inspection/{station_id}/` | **login only** |
+| `api_ping` | the first two calls above | — |
+
+How ADL authenticates:
+- **API key** → header `Authorization: Api-Key <key>` (the `djangorestframework-api-key`
+  default; ADL sets no custom header). Create one in ADL's Django admin at
+  `/debug/django-admin/` → **API Keys**, or in `manage.py shell`
+  (`from rest_framework_api_key.models import APIKey; APIKey.objects.create_key(name="adl-mcp")`).
+  The key is shown once.
+- **Login (JWT)** → `POST /api/token/` with an ADL username and password returns an access
+  token, sent as `Authorization: Bearer …`. The QC endpoints accept nothing else. Use a
+  **dedicated ADL user with no editing permissions**: the password is also an ADL admin
+  login. The server logs in again by itself when the token expires.
+
+Things the API route deliberately does not do: free-form SQL, the hourly continuous
+aggregate, or station lookup by human code — use the db route for those. Data tools take
+ADL's integer **station link** id (from `api_station_links`), except `api_qc_inspection`,
+which takes ADL's **station** id (`station.id` in the same response). Values come back
+keyed by parameter id as ADL sends them, plus a `values` / `parameter` copy keyed by name.
+
+> Verified against ADL's source at v0.8.17 and a stub that copies its responses and auth
+> rules (`tests/test_adl_api.py`). **Not yet run against a live ADL instance** — do that
+> first (Step 4b).
+
+---
+
 ## Tools
 
-`ping` · `schema(table?)` · `query(sql, limit?)` · `hypertables()` ·
+DB route: `ping` · `schema(table?)` · `query(sql, limit?)` · `hypertables()` ·
 `stations(limit?)` · `observations(station?, parameter?, start?, end?, limit?)`
+
+API route: `api_ping` · `api_connections` · `api_station_links` · `api_station_link` ·
+`api_data_parameters` · `api_latest` · `api_timeseries` · `api_qc_summary` · `api_qc_inspection`
 
 Defaults are grounded (above) and overridable via `ADL_*` env (see `.env.example`).
 
@@ -99,11 +150,29 @@ A Windows/PowerShell wrapper is provided: `./Register-AdlMcp.ps1 -DbPassword '**
 }
 ```
 
+**API route only** (no database access needed, no Postgres driver imported):
+```bash
+claude mcp add adl-mcp-server \
+  -e ADL_BACKENDS=api -e ADL_API_URL=https://adl.example.org \
+  -e ADL_API_KEY=*** \
+  -e ADL_API_USERNAME=adl-reader -e ADL_API_PASSWORD=*** \
+  -- python /abs/path/to/adl-mcp-server/mcp_server.py
+```
+`ADL_API_URL` is the site root (no trailing `/api`). Omit the username/password if you do
+not need the two QC tools. `ADL_API_KEY_FILE` / `ADL_API_PASSWORD_FILE` read secrets
+from files instead.
+
 ## Step 4 — verify
 
 Restart the client (MCP servers connect on startup), then call `ping` (expect
 `connected: true`, `read_only: true`, a `timescaledb_version`, non-zero `hypertables`),
 then `hypertables()` and a small `observations(station=…, limit=5)`.
+
+**Step 4b — API route.** Call `api_ping` (expect `reachable: true`, the auth modes you
+set, non-zero `network_connections`). Then `api_connections` → `api_station_links` →
+`api_latest(station_link_id=…)`, and one `api_timeseries` for the last day. If you set a
+login, `api_qc_summary()`. Confirm one known-bad request is refused, for example an API
+key you revoked (expect status 403).
 
 ---
 
@@ -130,5 +199,7 @@ needs Docker, which `ubuntu-latest` provides.
 
 Remove the server from your client (e.g. `claude mcp remove adl-mcp-server`, or delete
 the `mcpServers` entry). The read-only role can be dropped in ADL's DB if no longer
-needed (`DROP ROLE adl_readonly;` after revoking grants). Nothing in ADL is mutated by
-this server.
+needed (`DROP ROLE adl_readonly;` after revoking grants). For the API route, revoke the
+API key in ADL's admin (**API Keys** → revoked) and deactivate the dedicated ADL user.
+To go back to v0.1.0 behaviour without uninstalling, unset `ADL_API_URL` (or set
+`ADL_BACKENDS=db`). Nothing in ADL is mutated by this server.
