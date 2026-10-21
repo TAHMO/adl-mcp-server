@@ -4,7 +4,7 @@ Run: python -m unittest tests.test_guards   (from the project root)
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from guards import guard_select, validate_ident  # noqa: E402
+from guards import api_path, guard_select, validate_base_url, validate_ident  # noqa: E402
 
 
 class GuardSelect(unittest.TestCase):
@@ -55,6 +55,41 @@ class ValidateIdent(unittest.TestCase):
         for bad in [None, "", "a b", "t;drop", "1abc", "a.b.c", "a-b", "drop table"]:
             with self.assertRaises(ValueError, msg=repr(bad)):
                 validate_ident(bad, "X")
+
+
+class ApiPath(unittest.TestCase):
+    def test_builds_allow_listed_paths(self):
+        self.assertEqual(api_path("connections"), "/api/network-connection/")
+        self.assertEqual(api_path("timeseries", station_link_id=7), "/api/data/timeseries/7/")
+        self.assertEqual(api_path("station_links", connection_id="3"), "/api/network-connection/3/station-links/")
+
+    def test_unknown_endpoint_rejected(self):
+        for bad in ["token", "admin", "../etc", "cms"]:
+            with self.assertRaises(ValueError, msg=bad):
+                api_path(bad)
+
+    def test_ids_must_be_positive_integers(self):
+        for bad in [0, -1, "1/../../admin", "1?x=1", "abc", 1.5, True, None, "01"]:
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                api_path("latest", station_link_id=bad)
+
+    def test_missing_or_extra_ids_rejected(self):
+        with self.assertRaises(ValueError):
+            api_path("latest")
+        with self.assertRaises(ValueError):
+            api_path("connections", connection_id=1)
+
+
+class BaseUrl(unittest.TestCase):
+    def test_valid(self):
+        self.assertEqual(validate_base_url("https://adl.example.org/"), "https://adl.example.org")
+        self.assertEqual(validate_base_url("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
+
+    def test_invalid(self):
+        for bad in [None, "", "adl.example.org", "ftp://x", "https://adl.example.org/api",
+                    "https://x.org/?q=1", "https://user@x.org"]:
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                validate_base_url(bad)
 
 
 if __name__ == "__main__":
